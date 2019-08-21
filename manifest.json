@@ -1,0 +1,10 @@
+{
+  "domain": "virtual_thermostat",
+  "name": "Virtual thermostat",
+  "requirements": [],
+  "dependencies": [
+    "sensor",
+    "switch"
+  ],
+  "codeowners": []
+}
