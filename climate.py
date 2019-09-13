@@ -19,6 +19,7 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.event import (
     async_track_state_change, async_track_time_interval)
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.temperature import display_temp as show_temp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,6 +109,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         self._hot_tolerance = hot_tolerance
         self._keep_alive = keep_alive
         self._hvac_mode = initial_hvac_mode
+        self._saved_hvac_mode = None
         self._saved_target_temp = target_temp or away_temp
         self._temp_precision = precision
         if self.ac_mode:
@@ -145,8 +147,15 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         def _async_startup(event):
             """Init on startup."""
             sensor_state = self.hass.states.get(self.sensor_entity_id)
-            if sensor_state and sensor_state.state != STATE_UNKNOWN:
+            if sensor_state and sensor_state.state != STATE_UNKNOWN and sensor_state.state != STATE_UNAVAILABLE:
                 self._async_update_temp(sensor_state)
+
+            # TODO need to get this next bit to work so that the switch is turned off
+            #  if the sensor is unavailable. Not sure how at this point
+            # elif not sensor_state or sensor_state.state == STATE_UNAVAILABLE:
+            #     _LOGGER.warn("Something is wrong with the sensor,"
+            #                  "turning the heater off")
+            #     self.hass.services.call(HA_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: self.heater_entity_id})
 
         self.hass.bus.async_listen_once(
             EVENT_HOMEASSISTANT_START, _async_startup)
@@ -175,14 +184,16 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                 self._target_temp = self._away_temp
 
             # restore previous saved temperature
-            if old_state.attributes.get(ATTR_SAVED_TEMP) is None:
-                self._saved_target_temp = self.target_temperature
-            else:
-                self._saved_target_temp = float(
-                        old_state.attributes[ATTR_SAVED_TEMP])
+            if ATTR_SAVED_TEMP in old_state.attributes:
+                if old_state.attributes.get(ATTR_SAVED_TEMP) is None:
+                    self._saved_target_temp = self.target_temperature
+                else:
+                    self._saved_target_temp = float(
+                            old_state.attributes[ATTR_SAVED_TEMP])
 
             if not self._hvac_mode and old_state.state:
                 self._hvac_mode = old_state.state
+#                self._saved_hvac_mode = self._hvac_mode
 
         else:
             # No previous state, try and restore defaults
@@ -322,8 +333,6 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         if new_state is None:
             return
 
-        # TODO add support for going unavailable
-
         self._async_update_temp(new_state)
         await self._async_control_heating()
         await self.async_update_ha_state()
@@ -361,16 +370,11 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
             if not self._active or self._hvac_mode == HVAC_MODE_OFF:
                 return
 
-            if not self._is_sensor_available:
-                # if the sensor is unavailable, turn the heating off
-                # TODO check that setting _hvac_mode updates the UI
-                # Set the device state to OFF
-                self._hvac_mode = HVAC_MODE_OFF
-
-                if self._is_device_active:
-                    _LOGGER.warning("Sensor unavailable, turning heater off")
-                    await self._async_heater_turn_off()
-                    return
+            # if the sensor is unavailable, turn the heating off
+            if not self._is_sensor_available and self._is_device_active:
+                _LOGGER.warn("Sensor {} is unavailable, turning off the heater".format(self.name))
+                await self._async_heater_turn_off()
+                return
 
             if not force and time is None:
                 # If the `force` argument is True, we
@@ -394,7 +398,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                 self._cur_temp - self._target_temp >= self._hot_tolerance
             if self._is_device_active:
                 if (self.ac_mode and too_cold) or \
-                   (not self.ac_mode and too_hot):
+                        (not self.ac_mode and too_hot):
                     _LOGGER.info("Turning off heater %s",
                                  self.heater_entity_id)
                     await self._async_heater_turn_off()
@@ -403,7 +407,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                     await self._async_heater_turn_on()
             else:
                 if (self.ac_mode and too_hot) or \
-                   (not self.ac_mode and too_cold):
+                        (not self.ac_mode and too_cold):
                     _LOGGER.info("Turning on heater %s", self.heater_entity_id)
                     await self._async_heater_turn_on()
                 elif time is not None:
@@ -458,9 +462,10 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         await self.async_update_ha_state()
 
     @property
-    def state_attributes(self) -> Dict[str, Any]:
+    def state_attributes(self):
         """Return the state attributes."""
-        data = super().state_attributes()
+        data = super().state_attributes
         data[ATTR_SAVED_TEMP] = show_temp(
                 self.hass, self._saved_target_temp, self.temperature_unit,
                 self.precision)
+        return data
