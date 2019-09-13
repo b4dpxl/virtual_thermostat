@@ -21,6 +21,8 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.temperature import display_temp as show_temp
 
+from datetime import datetime
+
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_TOLERANCE = 0.3
@@ -36,6 +38,7 @@ CONF_MIN_DUR = 'min_cycle_duration'
 CONF_COLD_TOLERANCE = 'cold_tolerance'
 CONF_HOT_TOLERANCE = 'hot_tolerance'
 CONF_KEEP_ALIVE = 'keep_alive'
+CONF_SENSOR_TIMEOUT = 'sensor_timeout'
 CONF_INITIAL_HVAC_MODE = 'initial_hvac_mode'
 CONF_AWAY_TEMP = 'away_temp'
 CONF_PRECISION = 'precision'
@@ -57,6 +60,8 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
         float),
     vol.Optional(CONF_TARGET_TEMP): vol.Coerce(float),
     vol.Optional(CONF_KEEP_ALIVE): vol.All(
+        cv.time_period, cv.positive_timedelta),
+    vol.Optional(CONF_SENSOR_TIMEOUT): vol.All(
         cv.time_period, cv.positive_timedelta),
     vol.Optional(CONF_INITIAL_HVAC_MODE):
         vol.In([HVAC_MODE_COOL, HVAC_MODE_HEAT, HVAC_MODE_OFF]),
@@ -80,6 +85,7 @@ async def async_setup_platform(hass, config, async_add_entities,
     cold_tolerance = config.get(CONF_COLD_TOLERANCE)
     hot_tolerance = config.get(CONF_HOT_TOLERANCE)
     keep_alive = config.get(CONF_KEEP_ALIVE)
+    sensor_timeout = config.get(CONF_SENSOR_TIMEOUT)
     initial_hvac_mode = config.get(CONF_INITIAL_HVAC_MODE)
     away_temp = config.get(CONF_AWAY_TEMP)
     precision = config.get(CONF_PRECISION)
@@ -88,7 +94,7 @@ async def async_setup_platform(hass, config, async_add_entities,
     async_add_entities([VirtualThermostat(
         name, heater_entity_id, sensor_entity_id, min_temp, max_temp,
         target_temp, ac_mode, min_cycle_duration, cold_tolerance,
-        hot_tolerance, keep_alive, initial_hvac_mode, away_temp,
+        hot_tolerance, keep_alive, sensor_timeout, initial_hvac_mode, away_temp,
         precision, unit)])
 
 
@@ -97,7 +103,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
 
     def __init__(self, name, heater_entity_id, sensor_entity_id,
                  min_temp, max_temp, target_temp, ac_mode, min_cycle_duration,
-                 cold_tolerance, hot_tolerance, keep_alive,
+                 cold_tolerance, hot_tolerance, keep_alive, sensor_timeout,
                  initial_hvac_mode, away_temp, precision, unit):
         """Initialize the thermostat."""
         self._name = name
@@ -108,6 +114,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         self._cold_tolerance = cold_tolerance
         self._hot_tolerance = hot_tolerance
         self._keep_alive = keep_alive
+        self._sensor_timeout = sensor_timeout
         self._hvac_mode = initial_hvac_mode
         self._saved_hvac_mode = None
         self._saved_target_temp = target_temp or away_temp
@@ -128,6 +135,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
             self._support_flags = SUPPORT_FLAGS | SUPPORT_PRESET_MODE
         self._away_temp = away_temp
         self._is_away = False
+        self._last_sensor_update = None
 
     async def async_added_to_hass(self):
         """Run when entity about to be added."""
@@ -142,6 +150,10 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         if self._keep_alive:
             async_track_time_interval(
                 self.hass, self._async_control_heating, self._keep_alive)
+
+        if self._sensor_timeout:
+            async_track_time_interval(
+                self.hass, self._async_control_heating, self._sensor_timeout)
 
         @callback
         def _async_startup(event):
@@ -354,11 +366,13 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         """Update thermostat with latest state from sensor."""
         try:
             self._cur_temp = float(state.state)
+            self._last_sensor_update = state.last_changed  # datetime.utcnow()
         except ValueError as ex:
             _LOGGER.error("Unable to update from sensor: %s", ex)
 
     async def _async_control_heating(self, time=None, force=False):
         """Check if we need to turn heating on or off."""
+
         async with self._temp_lock:
             if not self._active and None not in (self._cur_temp,
                                                  self._target_temp):
@@ -375,6 +389,13 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                 _LOGGER.warn("Sensor {} is unavailable, turning off the heater".format(self.name))
                 await self._async_heater_turn_off()
                 return
+
+            if self._sensor_timeout and self._is_device_active and time is not None:
+                duration = (time - self._last_sensor_update).total_seconds()
+                if duration > self._sensor_timeout.total_seconds():
+                    _LOGGER.warn("No temperature update in {} seconds, turning off heater".format(duration))
+                    await self._async_heater_turn_off()
+                    return
 
             if not force and time is None:
                 # If the `force` argument is True, we
@@ -402,16 +423,18 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                     _LOGGER.info("Turning off heater %s",
                                  self.heater_entity_id)
                     await self._async_heater_turn_off()
-                elif time is not None:
-                    # The time argument is passed only in keep-alive case
+                elif time is not None and self._keep_alive:
+                    # The time argument was passed only in keep-alive case
+                    # now it's also used to track sensor timeouts
                     await self._async_heater_turn_on()
             else:
                 if (self.ac_mode and too_hot) or \
                         (not self.ac_mode and too_cold):
                     _LOGGER.info("Turning on heater %s", self.heater_entity_id)
                     await self._async_heater_turn_on()
-                elif time is not None:
-                    # The time argument is passed only in keep-alive case
+                elif time is not None and self._keep_alive:
+                    # The time argument was passed only in keep-alive case
+                    # now it's also used to track sensor timeouts
                     await self._async_heater_turn_off()
 
     @property
@@ -428,6 +451,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
     def _is_sensor_available(self):
         """If the toggleable device is currently active."""
         return not self.hass.states.is_state(self.sensor_entity_id, STATE_UNAVAILABLE)
+
 
     @property
     def supported_features(self):
