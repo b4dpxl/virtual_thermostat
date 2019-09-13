@@ -21,7 +21,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.temperature import display_temp as show_temp
 
-from datetime import datetime
+from datetime import timedelta
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -153,7 +153,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
 
         if self._sensor_timeout:
             async_track_time_interval(
-                self.hass, self._async_control_heating, self._sensor_timeout)
+                self.hass, self._async_control_heating, timedelta(seconds=30))
 
         @callback
         def _async_startup(event):
@@ -162,8 +162,9 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
             if sensor_state and sensor_state.state != STATE_UNKNOWN and sensor_state.state != STATE_UNAVAILABLE:
                 self._async_update_temp(sensor_state)
 
-            # TODO need to get this next bit to work so that the switch is turned off
-            #  if the sensor is unavailable. Not sure how at this point
+# TODO need to get this next bit to work so that the switch is turned off
+#  if the sensor is unavailable. Not sure how at this point
+#  If sensor_timeout is used with 'retained' temperatures, this shouldn't be a major issue
             # elif not sensor_state or sensor_state.state == STATE_UNAVAILABLE:
             #     _LOGGER.warn("Something is wrong with the sensor,"
             #                  "turning the heater off")
@@ -366,7 +367,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         """Update thermostat with latest state from sensor."""
         try:
             self._cur_temp = float(state.state)
-            self._last_sensor_update = state.last_changed  # datetime.utcnow()
+            self._last_sensor_update = state.last_changed
         except ValueError as ex:
             _LOGGER.error("Unable to update from sensor: %s", ex)
 
@@ -390,11 +391,13 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                 await self._async_heater_turn_off()
                 return
 
-            if self._sensor_timeout and self._is_device_active and time is not None:
+            # if the sensor hasn't sent a reading in a while, turn the heating off
+            if self._sensor_timeout and time is not None:
                 duration = (time - self._last_sensor_update).total_seconds()
                 if duration > self._sensor_timeout.total_seconds():
-                    _LOGGER.warn("No temperature update in {} seconds, turning off heater".format(duration))
-                    await self._async_heater_turn_off()
+                    if self._is_device_active:
+                        _LOGGER.warn("No temperature update in {} seconds, turning off heater".format(duration))
+                        await self._async_heater_turn_off()
                     return
 
             if not force and time is None:
