@@ -1,6 +1,7 @@
 {
   "domain": "virtual_thermostat",
   "name": "Virtual thermostat",
+  "documentation": "https://github.com/b4dpxl/virtual_thermostat",
   "requirements": [],
   "dependencies": [
     "sensor",
