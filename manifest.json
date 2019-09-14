@@ -6,5 +6,6 @@
     "sensor",
     "switch"
   ],
-  "codeowners": []
+  "codeowners": [],
+  "homeassistant": "0.96.0"
 }
