@@ -14,5 +14,7 @@ time. Note: if the switch is on and the sensor unavailable when Home Assistant s
 off. I'm working on that, but in the meantime, I suggest either using `retained` temperatures and the timeout (if using 
 MQTT sensors), or a startup automation to turn off the switches.
 
+Tested in Home Assistant 0.98.5. It _should_ work in 0.96+, as it's based on the `Climate 1.0` *Generic Thermostat*.
+
 See the [wiki](https://github.com/b4dpxl/virtual_thermostat/wiki) for configuration details. It's basically the same as
 *Generic Thermostat* with one addition (`sensor_timeout`) though.  
