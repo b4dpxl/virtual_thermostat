@@ -407,7 +407,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                 # keep-alive purposes, and `min_cycle_duration` is irrelevant.
                 if self.min_cycle_duration:
                     if self._is_device_active:
-                        c = STATE_ON
+                        current_state = STATE_ON
                     else:
                         current_state = HVAC_MODE_OFF
                     long_enough = condition.state(
