@@ -281,8 +281,10 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
     @property
     def preset_mode(self):
         """Return the current preset mode, e.g., home, away, temp."""
-        if self._is_away:
-            return PRESET_AWAY
+        if self._away_temp:
+            if self._is_away:
+                return PRESET_AWAY
+            return PRESET_NONE
         return None
 
     @property
