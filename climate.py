@@ -153,7 +153,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
 
         if self._sensor_timeout:
             async_track_time_interval(
-                self.hass, self._async_control_heating, timedelta(seconds=30))
+                self.hass, self._async_check_for_sensor_timeout, timedelta(seconds=30))
 
         @callback
         def _async_startup(event):
@@ -373,35 +373,45 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         except ValueError as ex:
             _LOGGER.error("Unable to update from sensor: %s", ex)
 
+    async def _async_check_for_sensor_timeout(self, time=None, force=False):
+        """Check to see if the sensor has become unavailable"""
+        async with self._temp_lock:
+            # if the sensor hasn't sent a reading in a while, turn the heating off
+            _LOGGER.debug("Checking for sensor timeout")
+            if self._sensor_timeout and time is not None and self._is_device_active:
+                _LOGGER.debug("Sensor timeout enabled")
+                duration = (time - self._last_sensor_update).total_seconds()
+                _LOGGER.debug("Duration: {} of {}".format(int(duration), self._sensor_timeout.total_seconds()))
+                if duration > self._sensor_timeout.total_seconds():
+                    _LOGGER.warn("No temperature update in {} seconds, turning off heater".format(int(duration)))
+                    await self._async_heater_turn_off()
+                return
+
     async def _async_control_heating(self, time=None, force=False):
         """Check if we need to turn heating on or off."""
-
         async with self._temp_lock:
             if not self._active and None not in (self._cur_temp,
                                                  self._target_temp):
                 self._active = True
-                _LOGGER.info("Obtained current and target temperature. "
-                             "Virtual thermostat active. %s, %s",
-                             self._cur_temp, self._target_temp)
+                _LOGGER.info("Obtained current and target temperature. Virtual thermostat %s active. %s, %s",
+                             self.name,
+                             self._cur_temp,
+                             self._target_temp
+                             )
 
             if not self._active or self._hvac_mode == HVAC_MODE_OFF:
                 return
 
             # if the sensor is unavailable, turn the heating off
             if not self._is_sensor_available and self._is_device_active:
-                _LOGGER.warn("Sensor {} is unavailable, turning off the heater".format(self.name))
+                _LOGGER.warn("Sensor {} is unavailable, turning off the heater {}".format(
+                    self.sensor_entity_id,
+                    self.heater_entity_id
+                    ))
                 await self._async_heater_turn_off()
                 return
 
-            # if the sensor hasn't sent a reading in a while, turn the heating off
-            if self._sensor_timeout and time is not None:
-                duration = (time - self._last_sensor_update).total_seconds()
-                if duration > self._sensor_timeout.total_seconds():
-                    if self._is_device_active:
-                        _LOGGER.warn("No temperature update in {} seconds, turning off heater".format(duration))
-                        await self._async_heater_turn_off()
-                    return
-
+            long_enough = True
             if not force and time is None:
                 # If the `force` argument is True, we
                 # ignore `min_cycle_duration`.
@@ -413,33 +423,36 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                     else:
                         current_state = HVAC_MODE_OFF
                     long_enough = condition.state(
-                        self.hass, self.heater_entity_id, current_state,
-                        self.min_cycle_duration)
-                    if not long_enough:
-                        return
+                        self.hass,
+                        self.heater_entity_id,
+                        current_state,
+                        self.min_cycle_duration,
+                    )
+#                    if not long_enough:
+#                        _LOGGER.debug("Switch not in current state for long enough. Not changing.")
+#                        return
 
-            too_cold = \
-                self._target_temp - self._cur_temp >= self._cold_tolerance
-            too_hot = \
-                self._cur_temp - self._target_temp >= self._hot_tolerance
+            too_cold = self._target_temp - self._cur_temp >= self._cold_tolerance
+            too_hot = self._cur_temp - self._target_temp >= self._hot_tolerance
             if self._is_device_active:
-                if (self.ac_mode and too_cold) or \
-                        (not self.ac_mode and too_hot):
-                    _LOGGER.info("Turning off heater %s",
-                                 self.heater_entity_id)
-                    await self._async_heater_turn_off()
+                if (self.ac_mode and too_cold) or (not self.ac_mode and too_hot):
+                    if not long_enough:
+                        _LOGGER.warn("Heater %s not on for long enough, not turning off", self.heater_entity_id)
+                    else:
+                        _LOGGER.info("Turning off heater %s", self.heater_entity_id)
+                        await self._async_heater_turn_off()
                 elif time is not None and self._keep_alive:
-                    # The time argument was passed only in keep-alive case
-                    # now it's also used to track sensor timeouts
+                    # The time argument is passed only in keep-alive case
                     await self._async_heater_turn_on()
             else:
-                if (self.ac_mode and too_hot) or \
-                        (not self.ac_mode and too_cold):
-                    _LOGGER.info("Turning on heater %s", self.heater_entity_id)
-                    await self._async_heater_turn_on()
+                if (self.ac_mode and too_hot) or (not self.ac_mode and too_cold):
+                    if not long_enough:
+                        _LOGGER.warn("Heater %s not off for long enough, not turning on", self.heater_entity_id)
+                    else:
+                        _LOGGER.info("Turning on heater %s", self.heater_entity_id)
+                        await self._async_heater_turn_on()
                 elif time is not None and self._keep_alive:
-                    # The time argument was passed only in keep-alive case
-                    # now it's also used to track sensor timeouts
+                    # The time argument is passed only in keep-alive case
                     await self._async_heater_turn_off()
 
     @property
