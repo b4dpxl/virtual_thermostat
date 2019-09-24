@@ -170,7 +170,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
 #  if the sensor is unavailable. Not sure how at this point
 #  If sensor_timeout is used with 'retained' temperatures, this shouldn't be a major issue
             # elif not sensor_state or sensor_state.state == STATE_UNAVAILABLE:
-            #     _LOGGER.warn("Something is wrong with the sensor,"
+            #     _LOGGER.warning("Something is wrong with the sensor,"
             #                  "turning the heater off")
             #     self.hass.services.call(HA_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: self.heater_entity_id})
 
@@ -460,7 +460,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
             else:
                 if (self.ac_mode and too_hot) or (not self.ac_mode and too_cold):
                     if not long_enough:
-                        _LOGGER.warn("Switch %s not off for long enough, not turning on", switch_entity)
+                        _LOGGER.warning("Switch %s not off for long enough, not turning on", switch_entity)
                     else:
                         _LOGGER.info("Turning on heater %s", self.heater_entity_id)
                         await self._async_heater_turn_on()
