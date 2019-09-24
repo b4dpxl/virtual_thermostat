@@ -35,6 +35,7 @@ CONF_MAX_TEMP = 'max_temp'
 CONF_TARGET_TEMP = 'target_temp'
 CONF_AC_MODE = 'ac_mode'
 CONF_MIN_DUR = 'min_cycle_duration'
+CONF_MIN_DUR_SWITCH = 'min_cycle_switch'
 CONF_COLD_TOLERANCE = 'cold_tolerance'
 CONF_HOT_TOLERANCE = 'hot_tolerance'
 CONF_KEEP_ALIVE = 'keep_alive'
@@ -52,6 +53,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_AC_MODE): cv.boolean,
     vol.Optional(CONF_MAX_TEMP): vol.Coerce(float),
     vol.Optional(CONF_MIN_DUR): vol.All(cv.time_period, cv.positive_timedelta),
+    vol.Optional(CONF_MIN_DUR_SWITCH): cv.entity_id,
     vol.Optional(CONF_MIN_TEMP): vol.Coerce(float),
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Optional(CONF_COLD_TOLERANCE, default=DEFAULT_TOLERANCE): vol.Coerce(
@@ -82,6 +84,7 @@ async def async_setup_platform(hass, config, async_add_entities,
     target_temp = config.get(CONF_TARGET_TEMP)
     ac_mode = config.get(CONF_AC_MODE)
     min_cycle_duration = config.get(CONF_MIN_DUR)
+    min_cycle_entity_id = config.get(CONF_MIN_DUR_SWITCH)
     cold_tolerance = config.get(CONF_COLD_TOLERANCE)
     hot_tolerance = config.get(CONF_HOT_TOLERANCE)
     keep_alive = config.get(CONF_KEEP_ALIVE)
@@ -93,7 +96,7 @@ async def async_setup_platform(hass, config, async_add_entities,
 
     async_add_entities([VirtualThermostat(
         name, heater_entity_id, sensor_entity_id, min_temp, max_temp,
-        target_temp, ac_mode, min_cycle_duration, cold_tolerance,
+        target_temp, ac_mode, min_cycle_duration, min_cycle_entity_id, cold_tolerance,
         hot_tolerance, keep_alive, sensor_timeout, initial_hvac_mode, away_temp,
         precision, unit)])
 
@@ -102,7 +105,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
     """Representation of a Virtual Thermostat device."""
 
     def __init__(self, name, heater_entity_id, sensor_entity_id,
-                 min_temp, max_temp, target_temp, ac_mode, min_cycle_duration,
+                 min_temp, max_temp, target_temp, ac_mode, min_cycle_duration, min_cycle_entity_id,
                  cold_tolerance, hot_tolerance, keep_alive, sensor_timeout,
                  initial_hvac_mode, away_temp, precision, unit):
         """Initialize the thermostat."""
@@ -111,6 +114,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         self.sensor_entity_id = sensor_entity_id
         self.ac_mode = ac_mode
         self.min_cycle_duration = min_cycle_duration
+        self.min_cycle_entity_id = min_cycle_entity_id
         self._cold_tolerance = cold_tolerance
         self._hot_tolerance = hot_tolerance
         self._keep_alive = keep_alive
@@ -383,7 +387,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                 duration = (time - self._last_sensor_update).total_seconds()
                 _LOGGER.debug("Duration: {} of {}".format(int(duration), self._sensor_timeout.total_seconds()))
                 if duration > self._sensor_timeout.total_seconds():
-                    _LOGGER.warn("No temperature update in {} seconds, turning off heater".format(int(duration)))
+                    _LOGGER.warning("No temperature update in {} seconds, turning off heater".format(int(duration)))
                     await self._async_heater_turn_off()
                 return
 
@@ -404,7 +408,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
 
             # if the sensor is unavailable, turn the heating off
             if not self._is_sensor_available and self._is_device_active:
-                _LOGGER.warn("Sensor {} is unavailable, turning off the heater {}".format(
+                _LOGGER.warning("Sensor {} is unavailable, turning off the heater {}".format(
                     self.sensor_entity_id,
                     self.heater_entity_id
                     ))
@@ -422,9 +426,15 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                         current_state = STATE_ON
                     else:
                         current_state = HVAC_MODE_OFF
+
+                    # which entity to check for the time
+                    if self.min_cycle_entity_id:
+                        switch_entity = self.min_cycle_entity_id
+                    else:
+                        switch_entity = self.heater_entity_id
                     long_enough = condition.state(
                         self.hass,
-                        self.heater_entity_id,
+                        switch_entity,
                         current_state,
                         self.min_cycle_duration,
                     )
@@ -437,7 +447,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
             if self._is_device_active:
                 if (self.ac_mode and too_cold) or (not self.ac_mode and too_hot):
                     if not long_enough:
-                        _LOGGER.warn("Heater %s not on for long enough, not turning off", self.heater_entity_id)
+                        _LOGGER.warning("Heater %s not on for long enough, not turning off", self.heater_entity_id)
                     else:
                         _LOGGER.info("Turning off heater %s", self.heater_entity_id)
                         await self._async_heater_turn_off()
