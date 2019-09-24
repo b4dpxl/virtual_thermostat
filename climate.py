@@ -387,7 +387,10 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                 duration = (time - self._last_sensor_update).total_seconds()
                 _LOGGER.debug("Duration: {} of {}".format(int(duration), self._sensor_timeout.total_seconds()))
                 if duration > self._sensor_timeout.total_seconds():
-                    _LOGGER.warning("No temperature update in {} seconds, turning off heater".format(int(duration)))
+                    _LOGGER.warning("No temperature update in {} seconds, turning off heater {}".format(
+                        int(duration),
+                        self.heater_entity_id
+                    ))
                     await self._async_heater_turn_off()
                 return
 
@@ -416,6 +419,8 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                 return
 
             long_enough = True
+            switch_entity = self.heater_entity_id
+
             if not force and time is None:
                 # If the `force` argument is True, we
                 # ignore `min_cycle_duration`.
@@ -430,8 +435,6 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                     # which entity to check for the time
                     if self.min_cycle_entity_id:
                         switch_entity = self.min_cycle_entity_id
-                    else:
-                        switch_entity = self.heater_entity_id
                     long_enough = condition.state(
                         self.hass,
                         switch_entity,
@@ -447,7 +450,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
             if self._is_device_active:
                 if (self.ac_mode and too_cold) or (not self.ac_mode and too_hot):
                     if not long_enough:
-                        _LOGGER.warning("Heater %s not on for long enough, not turning off", self.heater_entity_id)
+                        _LOGGER.warning("Switch %s not on for long enough, not turning off", switch_entity)
                     else:
                         _LOGGER.info("Turning off heater %s", self.heater_entity_id)
                         await self._async_heater_turn_off()
@@ -457,7 +460,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
             else:
                 if (self.ac_mode and too_hot) or (not self.ac_mode and too_cold):
                     if not long_enough:
-                        _LOGGER.warn("Heater %s not off for long enough, not turning on", self.heater_entity_id)
+                        _LOGGER.warn("Switch %s not off for long enough, not turning on", switch_entity)
                     else:
                         _LOGGER.info("Turning on heater %s", self.heater_entity_id)
                         await self._async_heater_turn_on()
