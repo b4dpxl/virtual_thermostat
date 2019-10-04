@@ -1,5 +1,6 @@
 """Adds support for virtual thermostat units."""
 import asyncio
+import datetime
 import logging
 
 import voluptuous as vol
@@ -12,7 +13,7 @@ from homeassistant.components.climate.const import (
 from homeassistant.const import (
     ATTR_ENTITY_ID, ATTR_TEMPERATURE, CONF_NAME, EVENT_HOMEASSISTANT_START,
     PRECISION_HALVES, PRECISION_TENTHS, PRECISION_WHOLE, SERVICE_TURN_OFF,
-    SERVICE_TURN_ON, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN)
+    SERVICE_TURN_ON, STATE_ON, STATE_OFF, STATE_UNAVAILABLE, STATE_UNKNOWN)
 from homeassistant.core import DOMAIN as HA_DOMAIN, callback
 from homeassistant.helpers import condition
 import homeassistant.helpers.config_validation as cv
@@ -170,7 +171,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
 #  if the sensor is unavailable. Not sure how at this point
 #  If sensor_timeout is used with 'retained' temperatures, this shouldn't be a major issue
             # elif not sensor_state or sensor_state.state == STATE_UNAVAILABLE:
-            #     _LOGGER.warning("Something is wrong with the sensor,"
+            #     _LOGGER.warn("Something is wrong with the sensor,"
             #                  "turning the heater off")
             #     self.hass.services.call(HA_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: self.heater_entity_id})
 
@@ -219,8 +220,7 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                     self._target_temp = self.max_temp
                 else:
                     self._target_temp = self.min_temp
-            _LOGGER.warning("No previously saved temperature, setting to %s",
-                            self._target_temp)
+            _LOGGER.warning("No previously saved temperature, setting to %s", self._target_temp)
 
         # Set default state to off
         if not self._hvac_mode:
@@ -422,6 +422,13 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
             switch_entity = self.heater_entity_id
 
             if not force and time is None:
+                # check if the switch has been in the current state for long enough,
+                # e.g. off for at least 5 mins before being switched on
+
+                # Note, if using an external min_cycle_entity_id, there's a later override
+                # because we can turn this heater on even if the external switch hasn't been off,
+                # providing it's already on (and vice versa)
+
                 # If the `force` argument is True, we
                 # ignore `min_cycle_duration`.
                 # If the `time` argument is not none, we were invoked for
@@ -435,35 +442,72 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
                     # which entity to check for the time
                     if self.min_cycle_entity_id:
                         switch_entity = self.min_cycle_entity_id
+
                     long_enough = condition.state(
                         self.hass,
                         switch_entity,
                         current_state,
                         self.min_cycle_duration,
                     )
-#                    if not long_enough:
-#                        _LOGGER.debug("Switch not in current state for long enough. Not changing.")
-#                        return
+
+                    _LOGGER.debug("Long enough? {}".format(long_enough))
+
+            elif force:
+                # set the "last sensor update" time to now, as we've been triggered by a target temperature change,
+                # not a sensor change. Otherwise the heating might immediately turn off again
+                _LOGGER.info("Forced change, updating stored update time")
+                self._last_sensor_update = datetime.datetime.now(datetime.timezone.utc)
 
             too_cold = self._target_temp - self._cur_temp >= self._cold_tolerance
             too_hot = self._cur_temp - self._target_temp >= self._hot_tolerance
             if self._is_device_active:
                 if (self.ac_mode and too_cold) or (not self.ac_mode and too_hot):
-                    if not long_enough:
-                        _LOGGER.warning("Switch %s not on for long enough, not turning off", switch_entity)
-                    else:
+                    # turn the heater off (too cold for AC or too hot for heating)
+
+                    if long_enough or (
+                            not long_enough and self.min_cycle_entity_id and condition.state(
+                                self.hass,
+                                self.min_cycle_entity_id,
+                                STATE_OFF
+                            )
+                    ):
+                        # If we want to turn the heater off, and we're using an external min_cycle_entity_id
+                        # which is already off, we can turn this off even if it's not been on for long enough
+
+                        if not long_enough:
+                            _LOGGER.debug("Not long enough, but switch already off, so turning off {}".format(self.heater_entity_id))
+
                         _LOGGER.info("Turning off heater %s", self.heater_entity_id)
                         await self._async_heater_turn_off()
+
+                    else:
+                        _LOGGER.warning("Switch %s not on for long enough, not turning off", switch_entity)
+
                 elif time is not None and self._keep_alive:
                     # The time argument is passed only in keep-alive case
                     await self._async_heater_turn_on()
             else:
                 if (self.ac_mode and too_hot) or (not self.ac_mode and too_cold):
-                    if not long_enough:
-                        _LOGGER.warning("Switch %s not off for long enough, not turning on", switch_entity)
-                    else:
+                    # turn the heater on (too hot for AC or too cold for heating)
+
+                    if long_enough or (
+                            not long_enough and self.min_cycle_entity_id and condition.state(
+                                self.hass,
+                                self.min_cycle_entity_id,
+                                STATE_ON
+                            )
+                    ):
+                        # If we want to turn the heater on, and we're using an external min_cycle_entity_id
+                        # which is already on, we can turn this on even if it's not been off for long enough
+                        if not long_enough:
+                            _LOGGER.debug("Not long enough, but switch already on, so turning on {}".format(self.heater_entity_id))
+
                         _LOGGER.info("Turning on heater %s", self.heater_entity_id)
                         await self._async_heater_turn_on()
+
+                    else:
+                        _LOGGER.warn("Switch %s not off for long enough, not turning on", switch_entity)
+
                 elif time is not None and self._keep_alive:
                     # The time argument is passed only in keep-alive case
                     await self._async_heater_turn_off()
