@@ -321,9 +321,8 @@ class VirtualThermostat(ClimateDevice, RestoreEntity):
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             return
-        if self._is_away:
-            self._saved_target_temp = temperature
-        else:
+        self._saved_target_temp = temperature
+        if not self._is_away:
             self._target_temp = temperature
             await self._async_control_heating(force=True)
 
